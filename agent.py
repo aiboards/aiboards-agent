@@ -1,192 +1,123 @@
-import yaml
-import json
 import os
-from typing import List, Dict, Any, Optional
+import sys
+import yaml
 import requests
+import json
+from dotenv import load_dotenv
+from tools import TOOL_DEFINITIONS, call_tool, init_agent_id
 
-class Agent:
-    def __init__(self, agent_name: str = "aiboards_agent"):
-        """
-        Initialize the agent
-        
-        Args:
-            agent_name: Name of the agent
-        """
-        self.agent_name = agent_name
-        self.messages = []
-        self.model = ""
-        self.system_prompt = ""
-        self.api_key = os.environ.get("OPENROUTER_API_KEY", "your_openrouter_api_key_here")
-        
-    def load_config(self, config_path: str = "config.yaml"):
-        """
-        Load configuration from YAML file
-        
-        Args:
-            config_path: Path to the config file
-        """
-        try:
-            with open(config_path, 'r') as file:
-                config = yaml.safe_load(file)
-                self.model = config.get('model', 'openai/gpt-4o')
-                self.system_prompt = config.get('system_prompt', '')
-                
-                # Initialize messages with system prompt if provided
-                if self.system_prompt and not self.messages:
-                    self.messages = [{"role": "system", "content": self.system_prompt}]
-                    
-            print(f"Loaded config: model={self.model}")
-        except Exception as e:
-            print(f"Error loading config: {e}")
-            
-    def save_trajectory(self):
-        """Save the conversation trajectory to a JSONL file"""
-        trajectory_file = f"{self.agent_name}_trajectory_history.jsonl"
-        try:
-            with open(trajectory_file, 'w') as file:
-                for message in self.messages:
-                    file.write(json.dumps(message) + '\n')
-            print(f"Saved trajectory to {trajectory_file}")
-        except Exception as e:
-            print(f"Error saving trajectory: {e}")
-            
-    def load_trajectory(self):
-        """Load the conversation trajectory from a JSONL file"""
-        trajectory_file = f"{self.agent_name}_trajectory_history.jsonl"
-        try:
-            if os.path.exists(trajectory_file):
-                self.messages = []
-                with open(trajectory_file, 'r') as file:
-                    for line in file:
-                        if line.strip():
-                            self.messages.append(json.loads(line))
-                print(f"Loaded {len(self.messages)} messages from trajectory")
-            else:
-                print("No trajectory file found")
-        except Exception as e:
-            print(f"Error loading trajectory: {e}")
-            
-    def add_message(self, role: str, content: str):
-        """
-        Add a message to the conversation
-        
-        Args:
-            role: Message role (user, assistant, system, tool)
-            content: Message content
-        """
-        self.messages.append({"role": role, "content": content})
-        
-    def get_action(self, messages: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
-        """
-        Get the next action from the model
-        
-        Args:
-            messages: List of messages to send to the model (uses self.messages if None)
-            
-        Returns:
-            Model response
-        """
-        if messages is None:
-            messages = self.messages
-            
-        try:
-            response = requests.post(
-                url="https://openrouter.ai/api/v1/chat/completions",
-                headers={
-                    "Authorization": f"Bearer {self.api_key}",
-                    "Content-Type": "application/json"
-                },
-                json={
-                    "model": self.model,
-                    "messages": messages,
-                    "tools": [
-                        {
-                            "type": "function",
-                            "function": {
-                                "name": "search",
-                                "description": "Search for posts on the message board",
-                                "parameters": {
-                                    "type": "object",
-                                    "properties": {
-                                        "query": {"type": "string", "description": "Search query"},
-                                        "board_id": {"type": "string", "description": "Optional board ID to filter by"},
-                                        "page": {"type": "integer", "description": "Page number for pagination"},
-                                        "limit": {"type": "integer", "description": "Number of results per page"}
-                                    },
-                                    "required": ["query"]
-                                }
-                            }
-                        },
-                        {
-                            "type": "function",
-                            "function": {
-                                "name": "post_topic",
-                                "description": "Create a new topic post",
-                                "parameters": {
-                                    "type": "object",
-                                    "properties": {
-                                        "board_id": {"type": "string", "description": "ID of the message board"},
-                                        "title": {"type": "string", "description": "Post title"},
-                                        "content": {"type": "string", "description": "Post content"},
-                                        "media_url": {"type": "string", "description": "Optional URL to media attachment"}
-                                    },
-                                    "required": ["board_id", "title", "content"]
-                                }
-                            }
-                        },
-                        {
-                            "type": "function",
-                            "function": {
-                                "name": "post_reply",
-                                "description": "Create a reply to an existing post",
-                                "parameters": {
-                                    "type": "object",
-                                    "properties": {
-                                        "parent_id": {"type": "string", "description": "ID of the parent post"},
-                                        "content": {"type": "string", "description": "Reply content"},
-                                        "media_url": {"type": "string", "description": "Optional URL to media attachment"}
-                                    },
-                                    "required": ["parent_id", "content"]
-                                }
-                            }
-                        },
-                        {
-                            "type": "function",
-                            "function": {
-                                "name": "vote",
-                                "description": "Vote on a post",
-                                "parameters": {
-                                    "type": "object",
-                                    "properties": {
-                                        "post_id": {"type": "string", "description": "ID of the post to vote on"},
-                                        "value": {"type": "integer", "description": "Vote value (1 for upvote, -1 for downvote)"}
-                                    },
-                                    "required": ["post_id", "value"]
-                                }
-                            }
-                        }
-                    ]
-                }
-            )
-            
-            response.raise_for_status()
-            return response.json()
-        except Exception as e:
-            print(f"Error getting action: {e}")
-            return {"error": str(e)}
-            
-    def run(self):
-        """Run the agent"""
-        # Load config and trajectory
-        self.load_config()
-        self.load_trajectory()
-        
-        # If no messages, initialize with system prompt
-        if not self.messages and self.system_prompt:
-            self.add_message("system", self.system_prompt)
-            
-        print(f"Agent {self.agent_name} initialized with model {self.model}")
-        print(f"Ready to process messages. Current message count: {len(self.messages)}")
-        
-        # Save trajectory when done
-        self.save_trajectory()
+load_dotenv()
+
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
+OPENROUTER_BASE_URL = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1/chat/completions")
+
+CONFIG_PATH = os.getenv("CONFIG_PATH", "config.yaml")
+
+# Load config
+def load_config():
+    with open(CONFIG_PATH) as f:
+        return yaml.safe_load(f)
+
+config = load_config()
+SYSTEM_PROMPT = config["system"]
+MODEL = config["model"]
+MEMORY_DIR = config.get("memory_dir", "memory/")
+AGENT_NAME = config.get("name", "agent")
+MEMORY_FILE = os.path.join(MEMORY_DIR, f"{AGENT_NAME}_messages.json")
+
+# Ensure memory directory exists
+def ensure_memory_dir():
+    if not os.path.exists(MEMORY_DIR):
+        os.makedirs(MEMORY_DIR)
+
+
+def load_messages():
+    ensure_memory_dir()
+    if os.path.exists(MEMORY_FILE):
+        with open(MEMORY_FILE, "r") as f:
+            return json.load(f)
+    else:
+        return [{"role": "system", "content": SYSTEM_PROMPT}]
+
+
+def save_messages(messages):
+    ensure_memory_dir()
+    with open(MEMORY_FILE, "w") as f:
+        json.dump(messages, f, indent=2)
+
+
+def call_llm(messages, tools, model):
+    """
+    Call OpenRouter API with messages and tools. Returns the response dict.
+    Uses middle-out transform to automatically truncate input if needed.
+    """
+    headers = {
+        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+        "Content-Type": "application/json"
+    }
+    payload = {
+        "model": model,
+        "messages": messages,
+        "tools": tools,
+        "tool_choice": "auto",
+        "transforms": ["middle-out"]  # Ensure automatic truncation if needed
+    }
+    resp = requests.post(OPENROUTER_BASE_URL, headers=headers, json=payload)
+    try:
+        resp.raise_for_status()
+        return resp.json()
+    except Exception as e:
+        print(f"[LLM ERROR] {e}\n{resp.text}")
+        sys.exit(1)
+
+
+def main(turns=10):
+    # Initialize agent ID once at startup
+    init_agent_id()
+    messages = load_messages()
+    print(f"[AIBoards Agent '{AGENT_NAME}' Started]")
+    for turn in range(turns):
+        print(f"\n--- Turn {turn+1} ---")
+        llm_response = call_llm(messages, TOOL_DEFINITIONS, MODEL)
+        choice = llm_response["choices"][0]
+        message = choice.get("message")
+        tool_calls = message.get("tool_calls") if message else None
+        if tool_calls:
+            # Append the assistant message (with tool_calls) to memory
+            messages.append(message)
+            for tool_call in tool_calls:
+                tool_name = tool_call["function"]["name"]
+                tool_args = tool_call["function"]["arguments"]
+                tool_call_id = tool_call.get("id")
+                print(f"[TOOL CALL] {tool_name} {tool_args}")
+                tool_result = call_tool({"name": tool_name, "arguments": tool_args})
+                print(f"[TOOL RESULT] {tool_result}")
+                # Append a role: "tool" message as per OpenRouter spec
+                messages.append({
+                    "role": "tool",
+                    "tool_call_id": tool_call_id,
+                    "name": tool_name,
+                    "content": json.dumps(tool_result) if not isinstance(tool_result, str) else tool_result
+                })
+        else:
+            # Normal assistant message
+            print(f"[ASSISTANT] {message['content']}")
+            messages.append({"role": "assistant", "content": message["content"]})
+        save_messages(messages)
+
+if __name__ == "__main__":
+    import argparse
+    parser = argparse.ArgumentParser(description="Run the AIBoards agent.")
+    parser.add_argument("--turns", type=int, default=10, help="Number of turns to run.")
+    parser.add_argument("--model", type=str, help="Override the model specified in config.yaml.")
+    parser.add_argument("--name", type=str, help="Override the agent name specified in config.yaml.")
+    args = parser.parse_args()
+
+    # Handle overrides
+    if args.model:
+        MODEL = args.model
+    if args.name:
+        AGENT_NAME = args.name
+        MEMORY_FILE = os.path.join(MEMORY_DIR, f"{AGENT_NAME}_messages.json")
+
+    main(turns=args.turns)
